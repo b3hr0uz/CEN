@@ -1,0 +1,32 @@
+services:
+  cen-cli:
+    build: .
+    image: cen:latest
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GMAIL_SENDER=${GMAIL_SENDER}
+      - CEN_TOKEN_STORAGE=${CEN_TOKEN_STORAGE:-file}
+      - CEN_GMAIL_TOKEN_JSON=${CEN_GMAIL_TOKEN_JSON}
+      - GMAIL_LOGIN_HINT=${GMAIL_LOGIN_HINT}
+    entrypoint: ["cen"]
+    command: ["--help"]
+    stdin_open: true
+    tty: true
+
+  cen-monitor:
+    image: cen:latest
+    depends_on:
+      - cen-cli
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GMAIL_SENDER=${GMAIL_SENDER}
+      - CEN_TOKEN_STORAGE=${CEN_TOKEN_STORAGE:-file}
+      - CEN_GMAIL_TOKEN_JSON=${CEN_GMAIL_TOKEN_JSON}
+    entrypoint: ["cen"]
+    command: ["monitor", "--to", "${CEN_TO}", "--snapshot"]
+    profiles: ["linuxCamera"]
+    devices:
+      - "/dev/video0:/dev/video0"
+    restart: unless-stopped

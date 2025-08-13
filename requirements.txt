@@ -1,0 +1,8 @@
+click==8.1.7
+google-api-python-client==2.134.0
+google-auth==2.30.0
+google-auth-oauthlib==1.2.1
+keyring==24.3.1
+opencv-python==4.10.0.84
+numpy==1.26.4
+protobuf==4.25.3
