@@ -25,6 +25,38 @@ class GmailClient:
 	scopes: Sequence[str] = tuple(GMAIL_SCOPES)
 	_cached_creds: Optional[Credentials] = field(default=None, init=False, repr=False)
 
+	def _validate_oauth_config(self) -> None:
+		"""Validate OAuth configuration and provide helpful error messages."""
+		if not self.client_id:
+			raise ValueError("Google OAuth Client ID is required. Set GOOGLE_CLIENT_ID environment variable.")
+		if not self.client_secret:
+			raise ValueError("Google OAuth Client Secret is required. Set GOOGLE_CLIENT_SECRET environment variable.")
+		if not self.client_id.endswith('.apps.googleusercontent.com'):
+			raise ValueError(
+				f"Invalid Client ID format: {self.client_id}\n"
+				"Client ID should end with '.apps.googleusercontent.com'\n"
+				"Get your Client ID from Google Cloud Console: https://console.cloud.google.com/apis/credentials"
+			)
+		
+		# List of required redirect URIs that should be configured in Google Cloud Console
+		required_uris = [
+			"http://localhost:8080/",
+			"http://localhost:8081/",
+			"http://localhost:8082/",
+			"http://localhost:8090/",
+			"http://localhost:9000/",
+			"http://localhost:9001/",
+			"http://localhost:9090/",
+			"http://localhost:9091/"
+		]
+		
+		print("ℹ️  OAuth Configuration Check:")
+		print(f"   Client ID: {self.client_id}")
+		print("   Required redirect URIs in Google Cloud Console:")
+		for uri in required_uris:
+			print(f"   - {uri}")
+		print("\n   Configure these URIs at: https://console.cloud.google.com/apis/credentials")
+
 	def _load_credentials_from_keyring(self) -> Optional[Credentials]:
 		try:
 			serialized = keyring.get_password(SERVICE_NAME, TOKEN_USERNAME)
@@ -74,13 +106,22 @@ class GmailClient:
 			return None
 
 	def login(self, interactive: bool = True, force: bool = False, storage_backend: str = "keyring", use_console: bool = False, open_browser: bool = True, login_hint: Optional[str] = None) -> Credentials:
+		# Validate OAuth configuration first
+		self._validate_oauth_config()
+		
+		# Standard ports for OAuth redirect URIs
+		standard_ports = [8080, 8081, 8082, 8090, 9000, 9001, 9090, 9091]
+		redirect_uris = [f"http://localhost:{port}/" for port in standard_ports]
+		redirect_uris.append("http://localhost/")  # Fallback
+		
 		client_config = {
 			"installed": {
 				"client_id": self.client_id,
 				"client_secret": self.client_secret,
 				"auth_uri": "https://accounts.google.com/o/oauth2/auth",
 				"token_uri": "https://oauth2.googleapis.com/token",
-				"redirect_uris": ["http://localhost"],
+				"redirect_uris": redirect_uris,
+				"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
 			}
 		}
 
@@ -162,17 +203,40 @@ class GmailClient:
 						httpd.shutdown()
 						httpd.server_close()
 				else:
-					# Try ports that don't conflict with your other app (avoiding 3000, 5432, 6379, 8000)
+					# Try ports that match our configured redirect URIs
 					ports_to_try = [8080, 8081, 8082, 8090, 9000, 9001, 9090, 9091]
 					creds = None
 					for port in ports_to_try:
 						try:
-							creds = flow.run_local_server(port=port, open_browser=open_browser, **extra_kwargs)
+							# Ensure the redirect URI matches what's in our config
+							redirect_uri = f"http://localhost:{port}/"
+							creds = flow.run_local_server(
+								port=port, 
+								open_browser=open_browser,
+								bind_addr="localhost",
+								**extra_kwargs
+							)
 							break
-						except OSError:
+						except OSError as e:
+							print(f"Port {port} unavailable: {e}")
+							continue
+						except Exception as e:
+							print(f"OAuth error on port {port}: {e}")
 							continue
 					if not creds:
-						raise RuntimeError("Could not start OAuth server on any available port. Use --console flag instead.")
+						error_msg = (
+							"❌ OAuth authentication failed on all ports!\n\n"
+							"Common solutions:\n"
+							"1. Configure redirect URIs in Google Cloud Console:\n"
+							"   https://console.cloud.google.com/apis/credentials\n"
+							"   Add these URIs to your OAuth 2.0 Client:\n"
+							f"   {', '.join([f'http://localhost:{p}/' for p in ports_to_try])}\n\n"
+							"2. Use console authentication: --console flag\n"
+							"3. Ensure ports 8080-9091 are available\n"
+							"4. Check firewall settings\n"
+							"5. Verify Client ID and Secret are correct"
+						)
+						raise RuntimeError(error_msg)
 
 			if storage_backend == "keyring":
 				self._save_credentials_to_keyring(creds)
