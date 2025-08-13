@@ -11,12 +11,15 @@ WORKDIR /app
 
 # System dependencies for OpenCV and runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-	libgl1-mesa-glx \
+	libgl1 \
 	libglib2.0-0 \
 	libsm6 \
 	libxext6 \
-	libxrender-dev \
+	libxrender1 \
 	libgomp1 \
+	libgthread-2.0-0 \
+	libgtk-3-0 \
+	python3-opencv \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& apt-get clean
 
