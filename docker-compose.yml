@@ -9,6 +9,15 @@ services:
       - CEN_TOKEN_STORAGE=${CEN_TOKEN_STORAGE:-file}
       - CEN_GMAIL_TOKEN_JSON=${CEN_GMAIL_TOKEN_JSON}
       - GMAIL_LOGIN_HINT=${GMAIL_LOGIN_HINT}
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "8082:8082"  
+      - "8090:8090"
+      - "9000:9000"
+      - "9001:9001"
+      - "9090:9090"
+      - "9091:9091"
     entrypoint: ["cen"]
     command: ["--help"]
     stdin_open: true

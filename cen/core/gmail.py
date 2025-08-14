@@ -148,17 +148,44 @@ class GmailClient:
 					import urllib.parse
 					from queue import Queue
 					
-					# Find an available port
-					import socket
-					sock = socket.socket()
-					sock.bind(('', 0))
-					port = sock.getsockname()[1]
-					sock.close()
+					# Try to use one of our pre-configured ports
+					ports_to_try = [8080, 8081, 8082, 8090, 9000, 9001, 9090, 9091]
+					port = None
 					
-					# Set up the redirect URI for this port
+					# Find an available port from our configured list
+					import socket
+					for test_port in ports_to_try:
+						try:
+							sock = socket.socket()
+							sock.bind(('localhost', test_port))
+							port = test_port
+							sock.close()
+							break
+						except OSError:
+							continue
+					
+					if port is None:
+						raise RuntimeError("No available ports from configured redirect URIs. Ensure ports 8080-9091 are available.")
+					
+					# Set up the redirect URI for this port (must match Google Cloud Console config)
 					redirect_uri = f"http://localhost:{port}/"
-					client_config["installed"]["redirect_uris"] = [redirect_uri]
-					flow = InstalledAppFlow.from_client_config(client_config, self.scopes)
+					print(f"Using redirect URI: {redirect_uri}")
+					
+					# Create a new client config with only this specific redirect URI
+					console_client_config = {
+						"installed": {
+							"client_id": self.client_id,
+							"client_secret": self.client_secret,
+							"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+							"token_uri": "https://oauth2.googleapis.com/token",
+							"redirect_uris": [redirect_uri],  # Only the one we're using
+							"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+						}
+					}
+					
+					flow = InstalledAppFlow.from_client_config(console_client_config, self.scopes)
+					# Explicitly set the redirect_uri on the flow
+					flow.redirect_uri = redirect_uri
 					
 					# Queue to capture the authorization code
 					code_queue = Queue()
@@ -172,69 +199,118 @@ class GmailClient:
 								self.send_response(200)
 								self.send_header('Content-type', 'text/html')
 								self.end_headers()
-								self.wfile.write(b'<html><body><h1>Authorization successful!</h1><p>You can close this window and return to the terminal.</p></body></html>')
+								self.wfile.write(b'<html><body><h1>Authorization Successful!</h1><p>You can close this window and return to the terminal.</p></body></html>')
 							else:
+								error = params.get('error', ['unknown'])[0]
 								self.send_response(400)
 								self.send_header('Content-type', 'text/html')
 								self.end_headers()
-								self.wfile.write(b'<html><body><h1>Authorization failed!</h1><p>No code received.</p></body></html>')
+								self.wfile.write(f'<html><body><h1>Authorization Failed!</h1><p>Error: {error}</p></body></html>'.encode())
 						
 						def log_message(self, format, *args):
 							pass  # Suppress server logs
 					
-					# Start temporary server
-					httpd = socketserver.TCPServer(("", port), CallbackHandler)
-					server_thread = threading.Thread(target=httpd.serve_forever)
-					server_thread.daemon = True
-					server_thread.start()
-					
+					# Start temporary server on the specific port (bind to all interfaces for Docker)
 					try:
-						auth_url, _ = flow.authorization_url(**extra_kwargs)
-						print(f"\nPlease visit this URL to authorize the application:")
+						httpd = socketserver.TCPServer(("0.0.0.0", port), CallbackHandler)
+						server_thread = threading.Thread(target=httpd.serve_forever)
+						server_thread.daemon = True
+						server_thread.start()
+						
+						# Create authorization URL (redirect_uri should be set on flow)
+						auth_url, state = flow.authorization_url(**extra_kwargs)
+						
+						# Verify redirect_uri is in the URL
+						if "redirect_uri=" not in auth_url:
+							# Manually add redirect_uri if missing
+							separator = "&" if "?" in auth_url else "?"
+							import urllib.parse
+							auth_url += f"{separator}redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
+						
+						print(f"\n🔗 Please visit this URL to authorize the application:")
 						print(f"{auth_url}")
-						print(f"\nWaiting for authorization... (Press Ctrl+C to cancel)")
+						print(f"\n🔍 Debug info:")
+						print(f"   - Redirect URI configured: {redirect_uri}")
+						print(f"   - redirect_uri in URL: {'redirect_uri=' in auth_url}")
+						print(f"\n⏳ Waiting for authorization on {redirect_uri}...")
+						print("   (Press Ctrl+C to cancel)")
 						
 						# Wait for the callback
-						code = code_queue.get(timeout=300)  # 5 minute timeout
-						flow.fetch_token(code=code)
-						creds = flow.credentials
-						print("Authorization successful!")
+						try:
+							code = code_queue.get(timeout=300)  # 5 minute timeout
+							flow.fetch_token(code=code)
+							creds = flow.credentials
+							print("✅ Authorization successful!")
+						except:
+							raise
+					except Exception as e:
+						print(f"❌ Console authentication failed: {e}")
+						raise
 					finally:
-						httpd.shutdown()
-						httpd.server_close()
+						try:
+							httpd.shutdown()
+							httpd.server_close()
+						except:
+							pass
 				else:
 					# Try ports that match our configured redirect URIs
 					ports_to_try = [8080, 8081, 8082, 8090, 9000, 9001, 9090, 9091]
 					creds = None
+					last_error = None
+					
 					for port in ports_to_try:
 						try:
-							# Ensure the redirect URI matches what's in our config
-							redirect_uri = f"http://localhost:{port}/"
-							creds = flow.run_local_server(
-								port=port, 
+							# Create a client config with only this specific redirect URI
+							port_client_config = {
+								"installed": {
+									"client_id": self.client_id,
+									"client_secret": self.client_secret,
+									"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+									"token_uri": "https://oauth2.googleapis.com/token",
+									"redirect_uris": [f"http://localhost:{port}/"],
+									"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+								}
+							}
+							
+							port_flow = InstalledAppFlow.from_client_config(port_client_config, self.scopes)
+							
+							print(f"🔄 Trying OAuth authentication on port {port}...")
+							creds = port_flow.run_local_server(
+								port=port,
+								host="localhost",
 								open_browser=open_browser,
-								bind_addr="localhost",
 								**extra_kwargs
 							)
+							print(f"✅ OAuth authentication successful on port {port}!")
 							break
+							
 						except OSError as e:
-							print(f"Port {port} unavailable: {e}")
+							print(f"⚠️  Port {port} unavailable: {e}")
+							last_error = e
 							continue
 						except Exception as e:
-							print(f"OAuth error on port {port}: {e}")
+							print(f"⚠️  OAuth error on port {port}: {e}")
+							last_error = e
 							continue
+							
 					if not creds:
 						error_msg = (
-							"❌ OAuth authentication failed on all ports!\n\n"
-							"Common solutions:\n"
-							"1. Configure redirect URIs in Google Cloud Console:\n"
+							f"❌ OAuth authentication failed on all ports!\n"
+							f"Last error: {last_error}\n\n"
+							"✅ Solutions to try:\n"
+							"1. Use console authentication (recommended):\n"
+							"   docker-compose run --rm cen-cli login --console\n\n"
+							"2. Verify Google Cloud Console configuration:\n"
 							"   https://console.cloud.google.com/apis/credentials\n"
-							"   Add these URIs to your OAuth 2.0 Client:\n"
+							"   Ensure these redirect URIs are added:\n"
 							f"   {', '.join([f'http://localhost:{p}/' for p in ports_to_try])}\n\n"
-							"2. Use console authentication: --console flag\n"
-							"3. Ensure ports 8080-9091 are available\n"
-							"4. Check firewall settings\n"
-							"5. Verify Client ID and Secret are correct"
+							"3. Check firewall/network:\n"
+							"   - Ensure ports 8080-9091 are available\n"
+							"   - Try disabling VPN if active\n"
+							"   - Check Windows Firewall settings\n\n"
+							"4. Verify credentials:\n"
+							"   - GOOGLE_CLIENT_ID ends with .apps.googleusercontent.com\n"
+							"   - GOOGLE_CLIENT_SECRET is correct"
 						)
 						raise RuntimeError(error_msg)
 
