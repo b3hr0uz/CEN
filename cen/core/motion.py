@@ -11,6 +11,8 @@ class MotionEvent:
 	timestamp: float
 	frame: Optional[np.ndarray]
 	last_notified_at: float = 0.0
+	motion_area: int = 0
+	num_contours: int = 0
 
 	def should_notify(self, min_interval_seconds: int) -> bool:
 		if self.last_notified_at == 0.0:
@@ -54,16 +56,26 @@ class MotionDetector:
 			_, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
 			contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-			motion_detected = False
+			# Aggregate motion metrics
+			total_area = 0
+			qualifying = []
 			for c in contours:
-				if cv2.contourArea(c) >= self.min_contour_area:
-					motion_detected = True
-					break
+				area = cv2.contourArea(c)
+				if area >= self.min_contour_area:
+					total_area += int(area)
+					qualifying.append(c)
+
+			motion_detected = total_area > 0
 
 			self.prev_gray = gray
 
 			if motion_detected:
-				yield MotionEvent(timestamp=time.time(), frame=frame)
+				yield MotionEvent(
+					timestamp=time.time(),
+					frame=frame,
+					motion_area=total_area,
+					num_contours=len(qualifying),
+				)
 
 	def close(self) -> None:
 		if self.cap is not None:

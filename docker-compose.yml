@@ -34,7 +34,14 @@ services:
       - CEN_TOKEN_STORAGE=${CEN_TOKEN_STORAGE:-file}
       - CEN_GMAIL_TOKEN_JSON=${CEN_GMAIL_TOKEN_JSON}
     entrypoint: ["cen"]
-    command: ["monitor", "--to", "${CEN_TO}", "--snapshot"]
+    command: [
+      "monitor",
+      "--to", "${CEN_TO}",
+      "--snapshot",
+      "--hourly-summary",
+      "--anomaly-threshold", "5",
+      "--min-interval-seconds", "60"
+    ]
     profiles: ["linuxCamera"]
     devices:
       - "/dev/video0:/dev/video0"

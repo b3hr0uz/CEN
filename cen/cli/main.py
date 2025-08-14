@@ -1,5 +1,6 @@
 from typing import Optional
 import time
+import threading
 
 import click
 
@@ -67,7 +68,9 @@ def test_email(to_email: str, subject: str, body: str, sender: Optional[str], cl
 @click.option("--snapshot", is_flag=True, help="Attach a snapshot image when motion is detected")
 @click.option("--subject", default="CEN motion detected", show_default=True)
 @click.option("--body", default="Motion was detected by your camera.", show_default=True)
-def monitor(device_index: int, sensitivity: int, min_interval_seconds: int, to_email: str, sender: Optional[str], client_id: str, client_secret: str, storage: str, snapshot: bool, subject: str, body: str) -> None:
+@click.option("--hourly-summary", is_flag=True, help="Send an hourly summary email with motion statistics")
+@click.option("--anomaly-threshold", type=int, default=5, show_default=True, help="Contours count threshold to consider as anomaly")
+def monitor(device_index: int, sensitivity: int, min_interval_seconds: int, to_email: str, sender: Optional[str], client_id: str, client_secret: str, storage: str, snapshot: bool, subject: str, body: str, hourly_summary: bool, anomaly_threshold: int) -> None:
 	"""Monitor webcam and send email on motion."""
 	gmail = GmailClient(client_id=client_id, client_secret=client_secret, scopes=["https://www.googleapis.com/auth/gmail.send"])
 	creds = gmail.ensure_logged_in(storage_backend=storage)
@@ -76,7 +79,46 @@ def monitor(device_index: int, sensitivity: int, min_interval_seconds: int, to_e
 	click.echo("Starting motion detection. Press Ctrl+C to stop.")
 
 	last_sent_at = 0.0
+	stats = {
+		"events": 0,
+		"total_motion_area": 0,
+		"max_motion_area": 0,
+		"max_contours": 0,
+		"anomalies": 0,
+	}
+
+	def send_summary() -> None:
+		while True:
+			time.sleep(3600)
+			if not hourly_summary:
+				continue
+			body_lines = [
+				"Hourly motion summary:",
+				f"- Events: {stats['events']}",
+				f"- Total motion area: {stats['total_motion_area']}",
+				f"- Peak motion area: {stats['max_motion_area']}",
+				f"- Peak contours: {stats['max_contours']}",
+				f"- Anomalies: {stats['anomalies']}",
+			]
+			try:
+				gmail.send_email(
+					to_email=to_email,
+					subject="CEN hourly summary",
+					body_text="\n".join(body_lines),
+					sender=sender,
+				)
+			except Exception:
+				pass
+			finally:
+				# reset counters
+				stats["events"] = 0
+				stats["total_motion_area"] = 0
+				stats["max_motion_area"] = 0
+				stats["max_contours"] = 0
+				stats["anomalies"] = 0
 	try:
+		if hourly_summary:
+			threading.Thread(target=send_summary, daemon=True).start()
 		for event in detector.detect_events():
 			if time.time() - last_sent_at < max(1, min_interval_seconds):
 				continue
@@ -85,10 +127,27 @@ def monitor(device_index: int, sensitivity: int, min_interval_seconds: int, to_e
 				retval, buf = event.encode_jpeg()
 				if retval:
 					attachment = ("snapshot.jpg", buf, "image/jpeg")
+			# Update stats
+			stats["events"] += 1
+			stats["total_motion_area"] += int(getattr(event, "motion_area", 0))
+			stats["max_motion_area"] = max(stats["max_motion_area"], int(getattr(event, "motion_area", 0)))
+			stats["max_contours"] = max(stats["max_contours"], int(getattr(event, "num_contours", 0)))
+
+			# Decide if anomaly
+			is_anomaly = int(getattr(event, "num_contours", 0)) >= max(1, anomaly_threshold)
+			if is_anomaly:
+				stats["anomalies"] += 1
+
+			message_body = body
+			message_body += f"\nMotion area: {getattr(event, 'motion_area', 0)}"
+			message_body += f"\nContours: {getattr(event, 'num_contours', 0)}"
+			if is_anomaly:
+				message_body += "\n⚠️ Anomaly detected!"
+
 			gmail.send_email(
 				to_email=to_email,
-				subject=subject,
-				body_text=body,
+				subject=subject if not is_anomaly else f"[ANOMALY] {subject}",
+				body_text=message_body,
 				sender=sender,
 				attachment=attachment,
 			)
